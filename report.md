@@ -161,3 +161,142 @@ We have run multiple rounds of training and validation to resolve the best param
 - **Is the baseline adequate?** Yes, as a reference point — an ROC-AUC around 0.90–0.91 is a reasonable, leakage-checked LightGBM result for this task. It may not be the final model, but it gives a solid ground to look at.
 
 - **Main caveat**: the 0.024 gap between public and private leaderboard scores is larger than the local train/val gap would suggest, and is most likely driven by time-based drift in the test set that our holdout - despite the purge gap - doesn't fully capture. 
+
+## 4. Deep Learning Model (FraudNet)
+
+While tree-based models like LightGBM excel at tabular datasets, we wanted to build a deep learning architecture to test whether neural networks can capture deeper interactions across the hundreds of masked and engineered features. We designed a custom PyTorch model named **FraudNet**, specifically adapted for mixed high-cardinality categorical and continuous tabular data.
+
+### Preprocessing & Feature Encoding
+
+Neural networks are sensitive to unscaled inputs, heavy tails, and extreme outliers. To prepare the features for gradient-based training, we built a dedicated preprocessing pipeline (`Prep`):
+
+* **Quantile Transformation:** Passed all 387 numerical features (383 raw/detrended features plus 4 frequency-encoded columns) through `QuantileTransformer(n_quantiles=1000, output_distribution="normal")`. This maps skewed variables (such as `TransactionAmt` and counting columns) into standard bell curves, stabilizing layer inputs.
+* **Frequency Encoding:** Maintained frequency encoding for the four key high-cardinality features (`card1`, `addr1`, `P_emaildomain`, `DeviceInfo`) from the ML baseline.
+* **Entity Embeddings:** Categorical features with category frequency $\ge 10$ were assigned unique integer indices. Unseen categories and missing values were mapped to dedicated tokens ($1$ for rare/unseen, $0$ for `NaN`). Each of the 51 categorical columns was mapped into an 8-dimensional learnable embedding via `nn.Embedding(num_categories, 8)`.
+
+### Custom PyTorch Implementations
+
+To satisfy the core assignment requirements and tailor the pipeline to tabular fraud data, we implemented two custom components from scratch:
+
+#### 1. Custom Layer: Learnable NaN Imputation (`NanFill`)
+Rather than relying on static median or zero-imputation before training, we designed a custom `nn.Module` with a learnable parameter vector:
+
+```python
+class NanFill(nn.Module):
+    def __init__(self, n_features):
+        super().__init__()
+        self.fill = nn.Parameter(torch.zeros(n_features))
+
+    def forward(self, x):
+        return torch.where(torch.isnan(x), self.fill, x)
+```
+
+During forward passes, `NanFill` detects `NaN` positions in the transformed continuous features and replaces them with `self.fill`. This allows backpropagation to optimize the imputed values specifically for downstream fraud classification.
+
+#### 2. Custom Optimizer: Decoupled Weight Decay (`AdamW`)
+We implemented a custom optimizer subclassing `torch.optim.Optimizer` that decouples weight decay from the adaptive gradient moment updates:
+
+```python
+class AdamW(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2):
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            lr, (beta1, beta2), eps, wd = group["lr"], group["betas"], group["eps"], group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                state = self.state[p]
+                if len(state) == 0:
+                    state["t"] = 0
+                    state["m"] = torch.zeros_like(p)
+                    state["v"] = torch.zeros_like(p)
+
+                state["t"] += 1
+                p *= 1 - lr * wd  # Decoupled weight decay
+                state["m"] = beta1 * state["m"] + (1 - beta1) * g
+                state["v"] = beta2 * state["v"] + (1 - beta2) * g ** 2
+                m_hat = state["m"] / (1 - beta1 ** state["t"])
+                v_hat = state["v"] / (1 - beta2 ** state["t"])
+                p -= lr * m_hat / (v_hat.sqrt() + eps)
+```
+
+Decoupled weight decay prevents large historical gradients from shrinking regularization penalties, improving generalization on noisy tabular signals.
+
+### Model Architecture
+
+`FraudNet` combines the continuous features (processed by `NanFill`) with the flattened 51 categorical embeddings ($51 \times 8 = 408$ dimensions) for a total input dimension of $387 + 408 = 795$ features.
+
+The backbone is a funnel-shaped Multi-Layer Perceptron (MLP) regularized at every stage:
+1. **Input Layer:** $795 \rightarrow 512$ (`Linear` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(0.2)`)
+2. **Hidden Layer 1:** $512 \rightarrow 256$ (`Linear` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(0.2)`)
+3. **Hidden Layer 2:** $256 \rightarrow 128$ (`Linear` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(0.2)`)
+4. **Head:** $128 \rightarrow 1$ (`Linear`, outputting raw logits)
+
+* **Loss Function:** `nn.BCEWithLogitsLoss()`.
+* **Batch Size:** 2048 with shuffling.
+* **Scheduler:** `torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.8)` applied at every epoch.
+* **Early Stopping:** Monitored on validation ROC-AUC with a patience of 3 epochs.
+
+### Training Diagnostics & Health Checks
+
+Training progress and gradient flows were tracked in Weights & Biases across each layer:
+
+![Train vs Validation Loss](img/dl_train_val_loss.png)
+
+![Validation ROC-AUC: FraudNet vs LightGBM](img/dl_val_auc_vs_lightgbm.png)
+
+![Gradient Norms Across Layers](img/dl_gradient_norms.png)
+
+#### Optimization Observations:
+* **Overfitting Dynamic:** Training loss decreases monotonically across epochs, but validation loss plateaus around $0.116 - 0.130$ after just $2 - 4$ epochs. Early stopping triggers reliably around epoch $4 - 6$ to preserve peak validation ROC-AUC.
+* **Gradient Stability:** Gradient norms across all linear layers (`linear1`, `linear2`, `linear3`, `output`) remain bounded and stable on a logarithmic scale throughout training, showing neither exploding nor vanishing gradients.
+* **`NanFill` Gradients:** The norm for `NanFill` is lower in magnitude because only missing entries receive non-zero gradients via `torch.where`, updating only the coordinates with unobserved values.
+
+### Hyperparameter Tuning
+
+We evaluated 6 hyperparameter configurations across learning rates, network capacities, and regularizations:
+
+| Run | Configuration | Best Epoch | Validation ROC-AUC |
+| :--- | :--- | :---: | :---: |
+| **`lr-high`** | `lr=4e-3`, `dropout=0.2`, `hidden=512`, `wd=1e-2` | **4** | **0.880688** |
+| **`small-net`** | `hidden=256`, `lr=2e-3`, `dropout=0.2`, `wd=1e-2` | 6 | 0.880515 |
+| **`dropout-high`** | `dropout=0.4`, `lr=2e-3`, `hidden=512`, `wd=1e-2` | 4 | 0.879982 |
+| **`wd-high`** | `weight_decay=1e-1`, `lr=2e-3`, `dropout=0.2` | 3 | 0.876399 |
+| **`base`** | `lr=2e-3`, `dropout=0.2`, `hidden=512`, `wd=1e-2` | 4 | 0.876326 |
+| **`lr-low`** | `lr=1e-3`, `dropout=0.2`, `hidden=512`, `wd=1e-2` | 3 | 0.874244 |
+
+> **Note:** Validation AUC across all runs clustered within a tight range ($0.874 - 0.881$). The `lr-high` configuration achieved the highest validation score ($0.8807$) and was selected for the final submission model.
+
+### Local Validation: FraudNet vs. LightGBM
+
+Using the best-performing weights (`lr-high`), we evaluated complementary metrics on the local holdout validation fold:
+
+| Metric | LightGBM Baseline | FraudNet (DL) |
+| :--- | :---: | :---: |
+| **ROC-AUC** | 0.9149 | 0.8807 |
+| **PR-AUC** | 0.5634 | 0.4427 |
+| **F1-Score (@0.5)** | 0.5022 | 0.4284 |
+
+### Final Submission vs. Leaderboard
+
+We retrained `FraudNet` on the full training set (all 182 days) using the `lr-high` hyperparameters for 4 epochs and submitted predictions to the competition:
+
+| Split | LightGBM Baseline | FraudNet |
+| :--- | :---: | :---: |
+| **Local validation** | 0.9149 | 0.880688 |
+| **Public leaderboard** | 0.933571 | 0.915955 |
+| **Private leaderboard** | **0.908754** | **0.884124** |
+
+### Deep Learning Conclusions and Highlights
+
+* **Tabular Performance Comparison:** LightGBM remains superior across all splits (local, public, and private), which aligns with standard empirical findings on tabular fraud datasets with heterogeneous feature structures.
+* **Generalization and Drift Gap:** FraudNet exhibits a smaller drop-off when moving to the temporally distant private test set. While the local gap between LightGBM and FraudNet was $\approx 0.034$ AUC points, the gap narrowed to $\approx 0.024$ on the Private Leaderboard. The quantile transformation and batch normalization helped limit degradation caused by uncalibrated feature shifts.
+* **Rapid Convergence:** The network reached its optimal validation performance within $4$ epochs. Training beyond that point resulted in overfitting on training loss while validation metrics degraded.
+* **Adequacy of the Model:** FraudNet achieves an 0.884 Private Leaderboard AUC without extensive feature interaction engineering, serving as a functional, leak-free neural baseline suitable for ensembling.
+
+
