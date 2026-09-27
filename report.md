@@ -312,3 +312,50 @@ We retrained `FraudNet` on the full training set (all 182 days) using the `lr-hi
 * **Adequacy of the Model:** FraudNet achieves an 0.884 Private Leaderboard AUC without extensive feature interaction engineering, serving as a functional, leak-free neural baseline suitable for ensembling.
 
 
+## 5. Ensemble Strategy
+
+To determine whether our neural network could add useful, complementary signals to our strong tree-based baseline, we combined LightGBM and FraudNet into an ensemble. A quick check of their validation probabilities revealed a correlation of **0.734**. Since the correlation is relatively low (well below 0.90), it indicates the models are learning different patterns, making them excellent candidates for ensembling.
+
+### Two-Stage Training & Leakage Prevention
+
+A common pitfall in ensembling is fitting the meta-learner (the blender) on the same data used to train the base models, leading to severe overfitting. To prevent this, and to respect our strict temporal split, we implemented a **Two-Stage** approach:
+
+**Stage 1: Weight Discovery**
+1. **Base Training:** We trained "holdout" versions of LightGBM and FraudNet strictly on **Days 1–122**. 
+2. **Meta-Feature Generation:** We used these holdout models to predict probabilities on our validation set (**Days 153–182**). 
+3. **Weight Calculation:** We evaluated three different blending strategies on these validation predictions to find the optimal combination weights. Once found, these weights were locked and frozen.
+
+**Stage 2: Final Refit & Inference**
+1. **Retraining Base Models:** We discarded the holdout models and trained fresh versions on more data to maximize their predictive power for the test set. LightGBM was trained on Days 1–122 + 153–182 (maintaining the 30-day purge gap), while FraudNet was trained on all 182 labeled days. 
+2. **Applying Frozen Weights:** We generated test set predictions using the newly refitted models, and then combined them using the exact weights discovered in Stage 1. 
+
+### Blending Methods and Validation Results
+
+During the Weight Discovery stage, we evaluated the following blending methods on the validation fold:
+
+* **50/50 Blend:** A simple baseline average.
+* **Method A (LR Stacking):** A Logistic Regression meta-model (`C=0.1`) trained directly on the base model probabilities.
+* **Method B (LR Normalized Weights):** Extracting the coefficients from the Logistic Regression model and normalizing them so they sum to 1.0 (yielding roughly 72% LightGBM, 28% FraudNet).
+* **Method C (AUC Grid Search):** A brute-force search stepping through weights from 0.00 to 1.00 to find the exact combination that maximizes ROC-AUC. 
+
+| Method | Validation ROC-AUC | Validation PR-AUC |
+| :--- | :---: | :---: |
+| **AUC Grid Search** | **0.9130** | 0.5489 |
+| **LightGBM (Alone)** | 0.9122 | **0.5498** |
+| **LR Stacking** | 0.9090 | 0.5271 |
+| **LR Normalized Weights** | 0.9090 | 0.5271 |
+| **50/50 Blend** | 0.9032 | 0.4978 |
+| **FraudNet (Alone)** | 0.8761 | 0.4121 |
+
+![AUC Grid Search on Held-out Period](img/auc_grid_search.png)
+
+**Weight Selection Analysis:** 
+The brute-force AUC grid search achieved the highest validation score, narrowly beating the standalone LightGBM model. However, the optimal weights heavily favored the tree model: **0.96 for LightGBM and 0.04 for FraudNet**. While FraudNet's contribution was small, it provided just enough orthogonal signal to push the peak AUC higher.
+
+### Final Leaderboard Results
+
+We exported the predictions from our three blending methods and submitted them to the competition to see how the frozen validation weights generalized to the unseen Private Leaderboard:
+
+![Ensemble Kaggle Leaderboard Results](img/ensemble_kaggle_leaderboard.png)
+
+> **Conclusion:** The ensemble process proved that while LightGBM carries the vast majority of the predictive power for this tabular dataset, the structural diversity of a deep learning model can still be harnessed to squeeze out minor performance gains without introducing temporal leakage.
