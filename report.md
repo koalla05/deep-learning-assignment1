@@ -24,6 +24,24 @@ $$D = \max_{x} \vert{}F_{fraud}(x) - F_{legit}(x)\vert{}$$
   
   **$\max_x$ operator**: *acts as a scanner. It calculates the vertical distance between the two running-percentage curves at every single point $x$, and returns the **single largest gap** it finds.*
 
+### Feature Groups
+
+#### Time-Leaking D-columns
+The dataset includes 15-`D` columns, which represent time deltas such as the number of days since a previous transaction. By plotting those D-columns against the `TransactionDT`, we can visually inspect the time leaking (correlation).
+
+![D-Column vs TransactionDT correlation](img/d-col-transactiondt-correlation.png)
+
+That findings prompted us to handle the D-columns carefully in the ML pipeline.
+
+#### V-Column Redundancy & Collinearity
+The dataset contains 339 engineered `V-columns`, making up a majority of our feature space. To determine if this high dimensionality contained unique information or repeated signals, we audited the block structure of these features. 
+
+By grouping the columns based on their exact `NaN` missingness footprints, we confirmed that Vesta generated these features in distinct batches. We then sampled the dataset to compute a pairwise correlation matrix. The analysis revealed significant structural redundancy, with hundreds of feature pairs exhibiting correlations greater than 0.90.
+
+![Hierarchical Cluster Heatmap: V-Column Block Collinearity](img/hierarchial_cluster_heatmap_v_col_collinearity.png)
+
+We generated a hierarchical clustermap on a subset of the V-columns to visualize this collinearity. The dendrograms successfully grouped the features into highly correlated, dense blocks. This redundancy indicates that the V-columns do not provide 339 unique dimensions of variance, fully justifying our later experiments with PCA.
+
 ## 2. Validation Strategy & Adversarial Validation
 
 In fraud detection, time features play a big role. Especially in the current dataset as the train set and test set are separated chronologically. Other than that, malicious actors can change their tactics over time, so a model trained on past data might struggle with future data ("concept drift"). 
