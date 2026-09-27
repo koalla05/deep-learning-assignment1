@@ -66,15 +66,58 @@ At some point after we implemented the validation we have noticed that there was
 
 ## 3. Machine Learning Baseline
 
-With our validation strategy locked in, we built our first ML model to set a baseline: a LightGBM (Gradient boosting decision tree) model. 
+### Feature Engineering 
 
-Based on what we learned from the exploratory and adversarial phases, we applied a few key preprocessing steps:
-*   Applied mathematical transformations (like `log1p`) to the transaction amounts to handle extreme outliers.
-*   Detrended the non-stationary D-columns.
-*   Dropped the features we identified as highly susceptible to drift.
+* **Time features** — hour of day / day of week from `TransactionDT` (fraud showed clear time-of-day patterns in EDA).
+* **`TransactionAmt` transforms** — `log1p` (heavy right skew) and the decimal part.
+* **`D`-column detrending** — subtract elapsed dataset time from the non-stationary `D` columns, as found during EDA, so trees don't split on values that never occur this early in time again.
+* **Frequency encoding** — for high-cardinality categoricals (`card1`, `addr1`, `P_emaildomain`, `DeviceInfo`), replacing raw IDs with how often they occur.
+* **Label encoding** — for the remaining categorical columns, so LightGBM can consume them as `category` dtype.
+* **Drift-prone columns dropped** — `C11, C12, C10, C4, C7` were flagged by adversarial validation in `validation.ipynb` as the strongest train/test drift drivers; we drop them for the baseline to avoid overfitting to a shift that won't hold at test time.
+* **No PCA** for V-columns as LightGBM handles them natively through EFB.
 
-> **Note:** we did not use PCA for the input features as LightGBM handles feature selection natively using Exclusive Feature Bundling.
+> **Note:** the impact of dropping some of C-columns can be seen in the **Feature importance** section.
 
-By setting up this baseline, we now have a solid benchmark to compare against as we move into more complex Deep Learning architectures.
+### Validation split
+
+**Strategy:** days 1–122 train, 30-day purge gap (123–152), days 153–182 validation**, so local scores are comparable to what we will see on the leaderboard.
+
+### Model parameters
+``` python
+params = {
+    'objective': 'binary',
+    'metric': 'auc',
+    'boosting_type': 'gbdt',
+    'learning_rate': 0.05,
+    'num_leaves': 64,
+    'max_depth': -1,
+    'min_child_samples': 50,
+    'subsample': 0.8,
+    'colsample_bytree': 0.7,
+    'reg_alpha': 0.1,
+    'reg_lambda': 0.1,
+    'n_estimators': 2000,
+    'random_state': SEED, # 42
+    'n_jobs': -1,
+}
+```
+
+> **Note:** even though AUC is chosen as the evaluation metric, PR-AUC, F1 scores used as well: 
+```
+Validation ROC-AUC:  0.9118
+Validation PR-AUC:   0.5634
+Validation F1 (@0.5): 0.5022  # Threshold 0.5
+```
+
+### Feature importance 
 
 ![Top 25 features by gain from the LightGBM baseline](img/top_25_features_by_gain_lightGBM_baseline.png)
+
+> **Note:** the Gain means reduction in error (increase in accuracy) contributed by all the splits that used a specific feature.
+
+#### C-columns droppage impact
+
+![Impact of dropping C-columns on feature importance](img/submission_col_dropping_difference.jpg)
+
+*The droppage of the columns resulted in slightly superior score on **Private** leaderboard, while **Public** score stayed roughly the same.*
+
