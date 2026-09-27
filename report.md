@@ -347,8 +347,6 @@ During the Weight Discovery stage, we evaluated the following blending methods o
 | **50/50 Blend** | 0.9032 | 0.4978 |
 | **FraudNet (Alone)** | 0.8761 | 0.4121 |
 
-![AUC Grid Search on Held-out Period](img/auc_grid_search.png)
-
 **Weight Selection Analysis:** 
 The brute-force AUC grid search achieved the highest validation score, narrowly beating the standalone LightGBM model. However, the optimal weights heavily favored the tree model: **0.96 for LightGBM and 0.04 for FraudNet**. While FraudNet's contribution was small, it provided just enough orthogonal signal to push the peak AUC higher.
 
@@ -356,6 +354,6 @@ The brute-force AUC grid search achieved the highest validation score, narrowly 
 
 We exported the predictions from our three blending methods and submitted them to the competition to see how the frozen validation weights generalized to the unseen Private Leaderboard:
 
-![Ensemble Kaggle Leaderboard Results](img/ensemble_kaggle_leaderboard.png)
+![Ensemble Kaggle Leaderboard Results](img/ensemble_kaggle_submission.png)
 
 > **Conclusion:** The ensemble process proved that while LightGBM carries the vast majority of the predictive power for this tabular dataset, the structural diversity of a deep learning model can still be harnessed to squeeze out minor performance gains without introducing temporal leakage.
