@@ -260,9 +260,9 @@ Training progress and gradient flows were tracked in Weights & Biases across eac
 
 ![Train vs Validation Loss](img/dl_train_val_loss.png)
 
-![Validation ROC-AUC: FraudNet vs LightGBM](img/dl_val_auc_vs_lightgbm.png)
+![Validation ROC-AUC: FraudNet vs LightGBM](img/val_roc_auc_lightGBM_fraudnet.png)
 
-![Gradient Norms Across Layers](img/dl_gradient_norms.png)
+![Gradient Norms Across Layers](img/gradient_norms.png)
 
 #### Optimization Observations:
 * **Overfitting Dynamic:** Training loss decreases monotonically across epochs, but validation loss plateaus around $0.116 - 0.130$ after just $2 - 4$ epochs. Early stopping triggers reliably around epoch $4 - 6$ to preserve peak validation ROC-AUC.
