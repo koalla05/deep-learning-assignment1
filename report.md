@@ -125,10 +125,22 @@ Validation F1 (@0.5): 0.5022  # Threshold 0.5
 
 > **Note:** that prompts us to review the necessity of dropping those columns for DL model.
 
+### Machine Baseline Training
+![ML Baseline training](img/ml_training.png)
+
 ### Parameters tuning
 We have run multiple rounds of training and validation to resolve the best parameters for ML baseline:
 
 ![Parameter tuning results](img/parameters_tuning.png)
+
+### Regularization Techniques
+**Early stopping**  
+During training with `eval_set`, LightGBM checks the validation metric (`val` AUC) after every boosting round and stops once it hasn't improved for `stopping_rounds` consecutive rounds. `best_iteration_` records the round where validation performance actually peaked —
+this avoids both underfitting (too few trees) and overfitting (too many), without us having to guess `n_estimators` by hand.
+
+**We scale `best_iteration_` by 1.1x for the final refit.** The final refit trains on `X_full = train + val` combined, with no held-out `eval_set` — there's nothing left to monitor, early stopping can't run on this fit at all. We're forced to pick a fixed `n_estimators` up front.
+
+The `best_iteration_` we have (313) was the optimal stopping point on the smaller `X_train`-only fold (420k rows). `X_full` has ~20% more rows (505k). More training data generally supports a few more useful trees before overfitting becomes a problem, since each split is estimated with more examples and there's more signal to fit. So reusing only 313 unchanged would likely limit our abilities in training.
 
 ### Local submission vs Leaderboard
 #### First submission:
