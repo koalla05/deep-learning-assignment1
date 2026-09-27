@@ -2,6 +2,8 @@
 
 This report outlines the progress made so far on the IEEE Fraud Detection project. We have completed the Exploratory Data Analysis (EDA), set up a robust validation strategy, and established our initial Machine Learning baseline. 
 
+[Project Repository](https://github.com/koalla05/deep-learning-assignment1)
+
 ## 1. Exploring the Data (EDA) and Target Metrics
 
 Before building any models, we needed to understand the shape and quirks of the dataset. The core challenge is immediately obvious: fraud is rare. Only about 3.5% of the transactions in the dataset are fraudulent. 
@@ -121,3 +123,41 @@ Validation F1 (@0.5): 0.5022  # Threshold 0.5
 
 *The droppage of the columns resulted in slightly superior score on **Private** leaderboard, while **Public** score stayed roughly the same.*
 
+> **Note:** that prompts us to review the necessity of dropping those columns for DL model.
+
+### Parameters tuning
+We have run multiple rounds of training and validation to resolve the best parameters for ML baseline:
+
+![Parameter tuning results](img/parameters_tuning.png)
+
+### Local submission vs Leaderboard
+#### First submission:
+
+| Split                 | ROC-AUC  |
+|-----------------------|----------|
+| Local validation (baseline params, cell 14) | 0.9118 |
+| Local validation (tuned params, **used for final submission**) | 0.9137 |
+| Public leaderboard     | 0.935025 |
+| Private leaderboard    | **0.898868** |
+
+#### Second submission:
+
+| Split                 | ROC-AUC  |
+|-----------------------|----------|
+| Local validation (baseline params) | 0.9149 |
+| Local validation (tuned params, **used for final submission**) | 0.9149 |
+| Public leaderboard     | 0.933571 |
+| Private leaderboard    | **0.908754** |
+
+> **Note:** Second submission without dropping the five C columns improved model performance across both local validation (0.9137 → 0.9149) and the Private Leaderboard (0.8988 → 0.9087), confirming that the initial decision to drop them was based on a wrong assumption and a flawed adversarial validation setup.
+
+
+### ML baseline conclusion and highlights
+
+- **Tuning**: a 4-point manual parameters tuning `num_leaves`, `learning_rate` `min_child_samples` did not improve local validation AUC - 0.9149 → 0.9149 (`num_leaves=128, lr=0.05, min_child_samples=100`, best_iteration=160).
+
+- **Result**: local validation ROC-AUC 0.9149 → Public LB 0.933571, Private LB 0.908754.
+
+- **Is the baseline adequate?** Yes, as a reference point — an ROC-AUC around 0.90–0.91 is a reasonable, leakage-checked LightGBM result for this task. It may not be the final model, but it gives a solid ground to look at.
+
+- **Main caveat**: the 0.024 gap between public and private leaderboard scores is larger than the local train/val gap would suggest, and is most likely driven by time-based drift in the test set that our holdout - despite the purge gap - doesn't fully capture. 
