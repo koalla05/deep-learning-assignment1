@@ -4,6 +4,8 @@ This report outlines the progress made so far on the IEEE Fraud Detection projec
 
 [Project Repository](https://github.com/koalla05/deep-learning-assignment1)
 
+Team: Dmytro Lazarenko, Alla Kovalchuk, Herman Havva
+
 ## 1. Exploring the Data (EDA) and Target Metrics
 
 Before building any models, we needed to understand the shape and quirks of the dataset. The core challenge is immediately obvious: fraud is rare. Only about 3.5% of the transactions in the dataset are fraudulent. 
